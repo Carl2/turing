@@ -1,0 +1,317 @@
+#+OPTIONS: tex:t ^:nil
+#+TODO: TODO IN_PROGRESS REVIEW | CANCEL DONE
+#+SETUPFILE: https://fniessen.github.io/org-html-themes/org/theme-bigblow.setup
+#+TITLE: Turing Machine in C++23 with boost::sml
+#+FILETAGS: :turing:cpp:sml:statemachine:
+#+DATE: 2026-04-04
+#+AUTHOR: calle
+#+STARTUP: overview
+#+PRIORITIES: A B C
+#+PROPERTY: branch feature/turing-machine
+
+* Overview
+
+A Turing machine interpreter written in C++23, using =boost::sml= as the
+state machine that drives the interpreter's execution loop.
+
+Inspired by Blaise Agüera y Arcas' /What is Intelligence/ — a program is
+just a slip of symbols, and data is just another slip. One slip reads and
+transforms the other. There is no fundamental distinction between program
+and data; both are patterns of symbols on tape.
+
+The machine operates with:
+- A *program string* — the sequence of instructions (one slip)
+- A *data tape* — a dynamically extending strip of =char= cells (another slip)
+- An *instruction pointer* (IP) stepping through the program
+- A *data head* (DH) moving over the data tape
+- A single =char= *register* as intermediary for read/write
+
+** Instruction Set
+
+| Symbol | Name  | Meaning                                                    |
+|--------+-------+------------------------------------------------------------|
+| =>     | Right | Move data head right                                       |
+| =<=    | Left  | Move data head left                                        |
+| =!=    | Write | Write register value to current data cell                  |
+| =%=    | Read  | Read current data cell into register                       |
+| =[=    | Loop  | Loop anchor (destination of =]= jump)                      |
+| =]=    | Back  | If current data cell \ne ='\0'=, jump IP back to matching =[= |
+
+Termination: the machine halts when the IP advances past the end of the program.
+
+** Role of boost::sml
+
+=boost::sml= models the /interpreter's execution state machine/, not the
+Turing machine's abstract states. The SML machine drives the fetch-execute
+cycle.
+
+*Note:* The original design had multiple states (Idle, Fetch, Execute,
+Seek) with sub-events fired via =process_event= inside actions. This was
+simplified because SML queues sub-events and processes them /after/ the
+current transition completes, causing them to arrive in the wrong state.
+The final design uses guards to multiplex a single =run= state:
+
+#+begin_src text
+                         ┌──────────────────────────────────────┐
+                         │           run                        │
+  ┌──────┐   Tick    ┌───┴───────────────────────────────────┐  │
+  │ idle │ ───────▶ │  [is_seeking]       / do_seek   ──────┘  │
+  └──────┘          │  [should_execute]   / do_execute ────────┘
+                    │  [should_halt]      ─────────▶  X (halted)
+                    └──────────────────────────────────────────┘
+#+end_src
+
+States:
+- =idle= — initial state, machine not yet started
+- =run=  — active execution (guards determine what happens each tick)
+- =X=    — SML terminal state; machine halted
+
+Events:
+- =Tick= — advance one execution step (the only event)
+
+Guards (evaluated in order on each =Tick= in =run=):
+- =is_seeking=      — context's =seeking= flag is set; seek toward matching =[=
+- =should_execute=  — not seeking and IP not past end; execute current instruction
+- =should_halt=     — not seeking and IP past end; transition to =X=
+
+The =seeking= flag in =MachineContext= replaces a dedicated Seek state.
+When =]= fires and the current cell \ne ='\0'=, the action sets
+=seeking=true= and =depth=1=. Subsequent ticks fire =do_seek= (decrement
+IP, track bracket depth) until the matching =[= is found.
+
+* Goals and Non-Goals
+
+** Goals
+- Implement a working Turing machine interpreter in C++23
+- Use =boost::sml= as the central state machine driving execution
+- Clean separation: program string vs data tape vs register
+- Support all six instructions: =>= =<= =!= =%= =[= =]=
+- =]= is *conditional*: jump back only if current data cell \ne ='\0'=
+- Handle nested =[= =]= correctly via depth counter during Seek
+- Demonstrate with example programs:
+  - Copy a cell value
+  - Zero-fill a region
+  - Simple counter or marker program
+
+** Non-Goals
+- GUI or visual tape display (terminal dump is fine)
+- Interactive I/O (=stdin= / =stdout= for data)
+- Performance optimisation
+- Formal Turing completeness proof
+
+* Constraints and Assumptions
+
+- C++23 standard
+- =boost::sml= for the interpreter state machine
+- =std::deque<char>= for the data tape (extends both directions)
+- Blank cell value: ='\0'= (null byte)
+- Program is a =std::string= passed at construction
+- Initial data tape content: optional =std::string=, defaults to all blank
+- Data head starts at position 0; IP starts at position 0
+- Nested =[= =]= matched correctly using a depth counter in the Seek state
+- No self-modifying code (program string is read-only)
+
+* Architecture
+
+#+begin_src text
+  ┌───────────────────────────────────────────────────────────┐
+  │                      TuringMachine                        │
+  │                                                           │
+  │  program: std::string           tape: Tape (deque<char>)  │
+  │  ip: size_t                     reg: char                 │
+  │                                                           │
+  │  sml_sm: boost::sml::sm<InterpreterSM>                    │
+  │    states: Idle, Fetch, Execute, Seek, Halted             │
+  │    events: Tick, StartLoop, FoundAnchor, EndOfProgram     │
+  │                                                           │
+  │  run()      — process_event(Tick) in loop until Halted    │
+  │  step()     — single Tick                                 │
+  │  dump()     — print tape, head position, register, state  │
+  │  is_halted()                                              │
+  └───────────────────────────────────────────────────────────┘
+
+  ┌───────────────────────────────────────────────────────────┐
+  │                          Tape                             │
+  │                                                           │
+  │  cells: std::deque<char>                                  │
+  │  head: int  (signed, allows left extension)               │
+  │                                                           │
+  │  read() -> char                                           │
+  │  write(char)                                              │
+  │  move_right()   — extends tape if needed                  │
+  │  move_left()    — extends tape if needed                  │
+  │  dump()         — display cells and head marker           │
+  └───────────────────────────────────────────────────────────┘
+#+end_src
+
+** File Layout
+
+#+begin_src text
+  turing/
+  ├── CMakeLists.txt
+  ├── doc/
+  │   └── plan.org               ← this document
+  ├── include/
+  │   └── turing/
+  │       ├── tape.hpp           ← Tape class (deque + head)
+  │       ├── interpreter.hpp    ← boost::sml state machine definition
+  │       └── machine.hpp        ← TuringMachine top-level class
+  ├── src/
+  │   └── main.cpp               ← Example programs and demo
+  └── tests/
+      └── test_machine.cpp       ← Unit tests
+#+end_src
+
+* Risks and Open Questions
+
+- =boost::sml= lambda/guard syntax can be verbose — validate with a
+  minimal example before wiring everything up
+- Seek state depth counter lives in TuringMachine, not in SML states
+  (SML guards read machine state via dependency injection)
+- Moving left past position 0: =deque::push_front= + adjust head index
+  to stay at 0 (or use signed index with offset tracking)
+- Should unknown characters in the program be treated as no-ops or errors?
+  *Resolved:* unknown characters are rejected at validation time (factory
+  returns =MachineError::UnknownInstruction=). Programs must consist only
+  of the six instruction characters.
+
+* Example Programs
+
+** Copy cell 0 to cell 1
+
+Program: ~%>!~
+
+#+begin_src text
+  Initial tape: [ 'A' | '\0' ]
+                   ↑ head
+
+  Step 1: %    → reg = 'A',  head stays at 0
+  Step 2: >    → head moves to 1
+  Step 3: !    → cell 1 = 'A'
+
+  Final tape:   [ 'A' | 'A' ]
+                         ↑ head
+#+end_src
+
+** Zero a cell using a blank cell
+
+Program: ~>>%<<!~
+
+#+begin_src text
+  Initial tape: [ 'X' | 'Y' | '\0' ]
+                   ↑ head
+
+  Step 1: >    → head to 1
+  Step 2: >    → head to 2
+  Step 3: %    → reg = '\0' (blank cell)
+  Step 4: <    → head to 1
+  Step 5: <    → head to 0
+  Step 6: !    → cell 0 = '\0'
+
+  Final tape:   [ '\0' | 'Y' | '\0' ]
+                    ↑ head
+#+end_src
+
+** Loop: copy cells until blank
+
+Program: ~[%>!>%<<]~
+
+#+begin_src text
+  Initial tape: [ 'A' | '\0' | 'B' | '\0' | '\0' ]
+                   ↑ head
+
+  Iteration 1:
+    [  → anchor
+    %  → reg = 'A'
+    >  → head to 1
+    !  → cell 1 = 'A'
+    >  → head to 2
+    %  → reg = 'B'
+    <  → head to 1
+    <  → head to 0
+    ]  → cell 0 = 'A' ≠ '\0' → jump to [
+
+  Iteration 2:
+    [  → anchor
+    %  → reg = 'A'      (cell 0 still 'A')
+    >  → head to 1
+    !  → cell 1 = 'A'   (overwrite again)
+    >  → head to 2
+    %  → reg = 'B'
+    <  → head to 1
+    <  → head to 0
+    ]  → cell 0 = 'A' ≠ '\0' → jump to [  ← infinite loop!
+
+  Note: to terminate, the loop body must eventually set
+  the cell under the head at ] to '\0'.
+#+end_src
+
+This example shows why loop design requires care — you need a
+deliberate exit strategy (zeroing the check cell).
+
+* Tasks [6/8]
+
+** DONE Set up CMake project with Conan + boost::sml                :setup:
+CLOSED: [2026-04-04 Sat]
+- Vendored =conan_provider.cmake= (v0.19.0) into =cmake/=
+- Created =conanfile.txt= with =sml/1.1.13=
+- =CMakeLists.txt= uses =find_package(sml)= — Conan runs automatically at configure
+- Minimal =main.cpp= using SML compiles and runs successfully
+- Build command: ~cmake -B build -S . -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=cmake/conan_provider.cmake -DCMAKE_BUILD_TYPE=Release~
+
+** DONE Implement =tape.hpp= — Tape and data head                   :core:
+CLOSED: [2026-04-05 Sun]
+- =TapeError= struct with =Kind= enum (=OutOfBounds=, =AllocationFail=, =InvalidWrite=)
+- =TapeLike= concept constraining all tape operations to return =std::expected=
+- =DequeTape= class: =std::deque<char>= backing, head position tracking
+- All methods return =std::expected<T, TapeError>=: =read()=, =write()=, =move_right()=, =move_left()=
+- =dump(std::ostream&)= displays cells and =^= head marker
+- Left-extension via =push_front('\0')= keeps head at 0
+- =static_assert(TapeLike<DequeTape>)= validates concept satisfaction
+- Added =CMakePresets.json= with =dev-release= / =dev-debug= presets
+
+** DONE Implement =interpreter.hpp= — SML state machine              :core:
+CLOSED: [2026-04-05 Sun]
+- Simplified from original multi-state design to 3-state (idle/run/X)
+- Single event =Tick=; guards (=is_seeking=, =should_execute=, =should_halt=)
+  multiplex behaviour in =run= state
+- Actions =do_execute= and =do_seek= use concrete =MachineContext<Tape>&=
+  parameter types for SML dependency injection (generic lambdas don't work)
+- =MachineContext<Tape>= template holds program, tape, IP, register,
+  depth counter, seeking flag, and optional error
+
+** DONE Implement =machine.hpp= — TuringMachine class                :core:
+CLOSED: [2026-04-05 Sun]
+- =TuringMachine<Tape>= template with factory =create()=
+- Validation: unknown instructions and unmatched brackets rejected
+  before construction
+- =step()=, =run()=, =is_halted()=, =dump()= public API
+- Uses =std::unique_ptr= for context and SML sm to ensure stable heap
+  address across moves (fixes dangling-reference bug with =std::expected=)
+
+** DONE Implement loop matching (Seek state logic)                   :core:
+CLOSED: [2026-04-05 Sun]
+- Seeking implemented as a flag in =MachineContext=, not a separate SML state
+- =]= action sets =seeking=true=, =depth=1= when current cell \ne ='\0'=
+- =do_seek= decrements IP, tracks bracket depth (=]= increments, =[= decrements)
+- When depth reaches 0, matching =[= found; =seeking= cleared
+- Bracket validation at construction prevents runtime unmatched bracket errors
+
+** DONE Write =main.cpp= with demonstration programs                :demo:
+CLOSED: [2026-04-05 Sun]
+- Copy cell value: ~%>!~ — copies ='A'= from cell 0 to cell 1
+- Zero a cell: ~>>%<<!~ — zeros cell 0 using blank cell 2
+- Terminating loop: ~>>%<<![>]~ — zeros cell 0, then loop scans right until blank
+- Empty program — halts immediately
+- Validation error demos: unknown instruction, unmatched =]=, unmatched =[=
+
+** TODO Write unit tests                                            :test:
+- Test each instruction individually (=>=, =<=, =!=, =%= )
+- Test =[= =]= loop with conditional exit
+- Test nested loops
+- Test tape auto-extension in both directions
+- Test halt on empty program
+
+** TODO Verify end-to-end: run demos and inspect tape output     :verify:
+Run the demo programs, verify tape output matches expected results
+from the example traces in this document.
