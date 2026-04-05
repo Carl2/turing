@@ -2,8 +2,10 @@
 
 #include <boost/sml.hpp>
 #include <expected>
+#include <functional>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 #include <turing/tape.hpp>
 
@@ -109,10 +111,9 @@ struct InterpreterSM {
         // -- Actions --
 
         const auto do_execute = [](ctx_t& ctx) {
-            char c = ctx.current_instr();
-
-            switch (c) {
-                case instr::Right: {
+            using Action = std::function<void(ctx_t&)>;
+            static const std::unordered_map<char, Action> dispatch {
+                { instr::Right, [](ctx_t& ctx) {
                     auto r = ctx.tape.move_right();
                     if (!r) {
                         ctx.error = MachineError{
@@ -121,9 +122,8 @@ struct InterpreterSM {
                             .tape_error = r.error(),
                         };
                     }
-                    break;
-                }
-                case instr::Left: {
+                }},
+                { instr::Left, [](ctx_t& ctx) {
                     auto r = ctx.tape.move_left();
                     if (!r) {
                         ctx.error = MachineError{
@@ -132,9 +132,8 @@ struct InterpreterSM {
                             .tape_error = r.error(),
                         };
                     }
-                    break;
-                }
-                case instr::Write: {
+                }},
+                { instr::Write, [](ctx_t& ctx) {
                     auto r = ctx.tape.write(ctx.reg);
                     if (!r) {
                         ctx.error = MachineError{
@@ -143,9 +142,8 @@ struct InterpreterSM {
                             .tape_error = r.error(),
                         };
                     }
-                    break;
-                }
-                case instr::Read: {
+                }},
+                { instr::Read, [](ctx_t& ctx) {
                     auto r = ctx.tape.read();
                     if (!r) {
                         ctx.error = MachineError{
@@ -156,12 +154,11 @@ struct InterpreterSM {
                     } else {
                         ctx.reg = *r;
                     }
-                    break;
-                }
-                case instr::Loop:
+                }},
+                { instr::Loop, [](ctx_t&) {
                     // [ is just an anchor — do nothing, IP advances
-                    break;
-                case instr::Back: {
+                }},
+                { instr::Back, [](ctx_t& ctx) {
                     // ] — conditional: jump back if current cell != '\0'
                     auto r = ctx.tape.read();
                     if (!r) {
@@ -170,20 +167,23 @@ struct InterpreterSM {
                             .message    = "read failed during ] check",
                             .tape_error = r.error(),
                         };
-                        break;
+                        return;
                     }
                     if (*r != '\0') {
                         ctx.depth   = 1;
                         ctx.seeking = true;
-                        return; // Don't advance IP
                     }
-                    break;
-                }
-                default:
-                    break;
+                }},
+            };
+
+            auto it = dispatch.find(ctx.current_instr());
+            if (it != dispatch.end()) {
+                it->second(ctx);
             }
 
-            ++ctx.ip;
+            if (!ctx.seeking) {
+                ++ctx.ip;
+            }
         };
 
         const auto do_seek = [](ctx_t& ctx) {

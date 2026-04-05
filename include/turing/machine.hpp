@@ -1,11 +1,14 @@
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <boost/sml.hpp>
 #include <cstddef>
 #include <expected>
 #include <format>
 #include <memory>
 #include <ostream>
+#include <ranges>
 #include <string>
 #include <string_view>
 
@@ -13,6 +16,8 @@
 #include <turing/tape.hpp>
 
 namespace sml = boost::sml;
+
+namespace rng = std::views;
 
 namespace turing {
 
@@ -37,50 +42,9 @@ public:
                        std::string_view tape_init = "")
         -> std::expected<TuringMachine, MachineError>
     {
-        // --- Validate: unknown instructions ---
-        for (std::size_t i = 0; i < program.size(); ++i) {
-            char c = program[i];
-            switch (c) {
-                case instr::Right:
-                case instr::Left:
-                case instr::Write:
-                case instr::Read:
-                case instr::Loop:
-                case instr::Back:
-                    break;
-                default:
-                    return std::unexpected(MachineError{
-                        .kind    = MachineError::Kind::UnknownInstruction,
-                        .message = std::format(
-                            "unknown instruction '{}' at position {}", c, i),
-                    });
-            }
-        }
+        if (auto r = validate_instructions(program); !r) return std::unexpected(r.error());
+        if (auto r = validate_brackets(program);     !r) return std::unexpected(r.error());
 
-        // --- Validate: bracket matching ---
-        int depth = 0;
-        for (std::size_t i = 0; i < program.size(); ++i) {
-            if (program[i] == instr::Loop) {
-                ++depth;
-            } else if (program[i] == instr::Back) {
-                --depth;
-                if (depth < 0) {
-                    return std::unexpected(MachineError{
-                        .kind    = MachineError::Kind::UnmatchedBracket,
-                        .message = std::format(
-                            "unmatched ']' at position {}", i),
-                    });
-                }
-            }
-        }
-        if (depth != 0) {
-            return std::unexpected(MachineError{
-                .kind    = MachineError::Kind::UnmatchedBracket,
-                .message = "unmatched '[': more '[' than ']'",
-            });
-        }
-
-        // All good — construct
         return TuringMachine(std::move(program), tape_init);
     }
 
@@ -157,6 +121,57 @@ public:
     }
 
 private:
+    /// Validate that all characters in the program are known instructions.
+    [[nodiscard]]
+    static auto validate_instructions(const std::string& program)
+        -> std::expected<void, MachineError>
+    {
+        constexpr std::array kValidInstrs {
+            instr::Right, instr::Left, instr::Write,
+            instr::Read,  instr::Loop, instr::Back,
+        };
+
+        for (const auto& [i, c] : program | rng::enumerate) {
+            if (!std::ranges::contains(kValidInstrs, c)) {
+                return std::unexpected(MachineError{
+                    .kind    = MachineError::Kind::UnknownInstruction,
+                    .message = std::format(
+                        "unknown instruction '{}' at position {}", c, i),
+                });
+            }
+        }
+        return {};
+    }
+
+    /// Validate that all brackets are properly matched.
+    [[nodiscard]]
+    static auto validate_brackets(const std::string& program)
+        -> std::expected<void, MachineError>
+    {
+        int depth = 0;
+        for (const auto& [i, c] : program | rng::enumerate) {
+            if (c == instr::Loop) {
+                ++depth;
+            } else if (c == instr::Back) {
+                --depth;
+                if (depth < 0) {
+                    return std::unexpected(MachineError{
+                        .kind    = MachineError::Kind::UnmatchedBracket,
+                        .message = std::format(
+                            "unmatched ']' at position {}", i),
+                    });
+                }
+            }
+        }
+        if (depth != 0) {
+            return std::unexpected(MachineError{
+                .kind    = MachineError::Kind::UnmatchedBracket,
+                .message = "unmatched '[': more '[' than ']'",
+            });
+        }
+        return {};
+    }
+
     /// Private constructor — only reachable through create()
     explicit TuringMachine(std::string program, std::string_view tape_init)
         : ctx_{std::make_unique<ctx_t>(ctx_t{
