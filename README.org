@@ -19,12 +19,12 @@ and data; both are patterns of symbols on tape.
 
 | Symbol | Name  | Meaning                                             |
 |--------+-------+-----------------------------------------------------|
-| =>     | Right | Move data head one cell to the right                |
-| =<=    | Left  | Move data head one cell to the left                 |
-| =!=    | Write | Write register value to the current cell            |
-| =%=    | Read  | Read current cell value into the register            |
-| =[=    | Loop  | Loop anchor (jump target for =]=)                   |
-| =]=    | Back  | If current cell is not null, jump back to matching =[= |
+| ~>~    | Right | Move data head one cell to the right                |
+| ~<~    | Left  | Move data head one cell to the left                 |
+| ~!~    | Write | Write register value to the current cell            |
+| ~%~    | Read  | Read current cell value into the register            |
+| ~[~    | Loop  | Loop anchor (jump target for ~]~)                   |
+| ~]~    | Back  | If current cell is not null, jump back to matching ~[~ |
 
 The machine halts when the instruction pointer advances past the end of
 the program.
