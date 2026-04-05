@@ -117,9 +117,6 @@ Guards evaluated on each =Tick= in =Run=:
 2. =should_execute= --- execute instruction at current IP
 3. =should_halt= --- IP past end of program
 
-Instruction dispatch uses a =static const std::unordered_map<char, std::function>=
-lookup table rather than a switch statement.
-
 ** TuringMachine
 
 =TuringMachine<Tape>= is the public API. Construction goes through a
