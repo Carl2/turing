@@ -1,0 +1,150 @@
+#+OPTIONS: tex:t ^:nil toc:2
+#+TITLE: Turing Machine Interpreter
+#+FILETAGS: :turing:cpp:sml:statemachine:
+#+DATE: 2026-04-05
+#+AUTHOR: calle
+#+STARTUP: overview
+
+* About
+
+A Turing machine interpreter written in C++23, using [[https://github.com/boost-ext/sml][boost::sml]] as the
+state machine driving the execution loop.
+
+Inspired by Blaise Aguera y Arcas' /What is Intelligence/ --- a program is
+just a slip of symbols, and data is just another slip. One slip reads and
+transforms the other. There is no fundamental distinction between program
+and data; both are patterns of symbols on tape.
+
+* Instruction Set
+
+| Symbol | Name  | Meaning                                             |
+|--------+-------+-----------------------------------------------------|
+| =>     | Right | Move data head one cell to the right                |
+| =<=    | Left  | Move data head one cell to the left                 |
+| =!=    | Write | Write register value to the current cell            |
+| =%=    | Read  | Read current cell value into the register            |
+| =[=    | Loop  | Loop anchor (jump target for =]=)                   |
+| =]=    | Back  | If current cell is not null, jump back to matching =[= |
+
+The machine halts when the instruction pointer advances past the end of
+the program.
+
+* Example Programs
+
+** Copy cell 0 to cell 1
+
+Program: ~%>!~
+
+#+begin_src text
+  Initial: [ 'A' ]        head at 0
+               ^
+  %  -> reg = 'A'
+  >  -> head moves to 1
+  !  -> cell 1 = 'A'
+
+  Final:   [ 'A' | 'A' ]  head at 1
+                    ^
+#+end_src
+
+** Zero a cell using a blank cell
+
+Program: ~>>%<<!~
+
+#+begin_src text
+  Initial: [ 'X' | 'Y' ]  head at 0
+               ^
+  >>   -> head to 2 (blank cell, auto-extended)
+  %    -> reg = '\0'
+  <<   -> head back to 0
+  !    -> cell 0 = '\0'
+
+  Final:   [ '\0' | 'Y' | '\0' ]  head at 0
+               ^
+#+end_src
+
+** Terminating loop
+
+Program: ~>>%<<![>]~
+
+#+begin_src text
+  Initial: [ 'X' | 'Y' ]  head at 0
+
+  >>%<<!  -> zeros cell 0 (see above)
+  [       -> loop anchor
+  >       -> head to 1 ('Y')
+  ]       -> cell != '\0', seek back to [
+  >       -> head to 2 ('\0')
+  ]       -> cell == '\0', fall through -> halt
+
+  Final:   [ '\0' | 'Y' | '\0' ]  head at 2
+                            ^
+#+end_src
+
+* Architecture
+
+#+begin_src text
+  include/turing/
+  ├── tape.hpp           TapeLike concept + DequeTape implementation
+  ├── interpreter.hpp    SML state machine, events, guards, actions
+  └── machine.hpp        TuringMachine factory + public API
+
+  src/
+  └── main.cpp           Demo programs
+#+end_src
+
+** Tape
+
+=DequeTape= uses =std::deque<char>= as backing storage. The tape
+auto-extends in both directions --- moving left past position 0
+prepends a blank cell. All operations return =std::expected<T, TapeError>=.
+
+** State Machine
+
+=boost::sml= drives a three-state interpreter loop:
+
+#+begin_src text
+  ┌──────┐  Tick   ┌─────┐  [should_halt]  ┌───┐
+  │ Idle │ ──────▶ │ Run │ ──────────────▶ │ X │
+  └──────┘         └──┬──┘                 └───┘
+                      │  ^
+    [is_seeking]      │  │  [should_execute]
+    / do_seek ────────┘  │  / do_execute
+                         └──────────────────┘
+#+end_src
+
+Guards evaluated on each =Tick= in =Run=:
+1. =is_seeking= --- scanning backward for matching =[=
+2. =should_execute= --- execute instruction at current IP
+3. =should_halt= --- IP past end of program
+
+Instruction dispatch uses a =static const std::unordered_map<char, std::function>=
+lookup table rather than a switch statement.
+
+** TuringMachine
+
+=TuringMachine<Tape>= is the public API. Construction goes through a
+factory method =create()= that validates the program (unknown instructions
+and unmatched brackets are rejected) before building the machine.
+
+Context and SML state machine are heap-allocated via =std::unique_ptr= to
+ensure stable addresses across moves (SML stores a reference to the
+injected context).
+
+* Building
+
+Requires:
+- GCC 15 (C++23)
+- CMake 3.24+
+- Conan 2
+
+Dependencies are fetched automatically via the vendored =conan_provider.cmake=.
+
+#+begin_src sh
+  cmake --preset dev-release
+  cmake --build --preset release
+  ./build/release/turing
+#+end_src
+
+* License
+
+MIT --- see [[file:LICENSE][LICENSE]].
